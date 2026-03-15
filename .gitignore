@@ -1,0 +1,26 @@
+# 环境变量与密钥（避免推送到 GitHub）
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 本地/IDE
+.idea/
+.vscode/
+*.db
+users.db
+
+# 测试/缓存
+.pytest_cache/
+.coverage
+htmlcov/

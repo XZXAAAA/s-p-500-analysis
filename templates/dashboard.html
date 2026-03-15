@@ -1,0 +1,751 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - S&P 500 Sentiment Analysis{% endblock %}
+
+{% block extra_css %}
+<style>
+    .treemap-container {
+        background: white;
+        border-radius: 15px;
+        padding: 20px;
+        margin-top: 20px;
+        min-height: 600px;
+        overflow: hidden;
+    }
+    #treemap-plot {
+        width: 100% !important;
+        height: 600px !important;
+        margin: 0;
+        padding: 0;
+    }
+    .treemap-container .js-plotly-plot {
+        width: 100% !important;
+        height: 600px !important;
+    }
+    .loading {
+        text-align: center;
+        padding: 50px;
+    }
+    .sentiment-controls {
+        background: white;
+        border-radius: 15px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+    .btn-group-toggle .btn {
+        border-radius: 25px;
+        margin: 5px;
+    }
+    .btn-group-toggle .btn.active {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-color: #667eea;
+    }
+    .btn-outline-success.active {
+        background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+        border-color: #28a745;
+        color: white;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <h1 class="card-title">
+                    <i class="fas fa-chart-pie"></i> Welcome, {{ username }}!
+                </h1>
+                <p class="card-text">Explore S&P 500 stock sentiment analysis by sector</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- View Mode Tabs -->
+<ul class="nav nav-tabs mb-4" id="viewTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="treemap-tab" data-bs-toggle="tab" data-bs-target="#treemap-content" type="button" role="tab" aria-controls="treemap-content" aria-selected="true">
+            <i class="fas fa-sitemap"></i> Treemap View
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="analysis-tab" data-bs-toggle="tab" data-bs-target="#analysis-content" type="button" role="tab" aria-controls="analysis-content" aria-selected="false">
+            <i class="fas fa-chart-bar"></i> ClickHouse Analytics
+        </button>
+    </li>
+</ul>
+
+<!-- Treemap Tab Content -->
+<div class="tab-content" id="viewTabContent">
+    <div class="tab-pane fade show active" id="treemap-content" role="tabpanel" aria-labelledby="treemap-tab">
+        <div class="sentiment-controls">
+            <div class="row align-items-center">
+                <div class="col-md-6">
+                    <h5><i class="fas fa-filter"></i> Select View:</h5>
+                    <div class="mb-2">
+                        <label class="form-label"><strong>Sentiment Type:</strong></label>
+                        <div class="btn-group-toggle" data-toggle="buttons">
+                            <label class="btn btn-outline-primary active" id="btn-positive">
+                                <input type="radio" name="sentiment" value="positive" checked>
+                                <i class="fas fa-arrow-up"></i> Most Positive
+                            </label>
+                            <label class="btn btn-outline-primary" id="btn-negative">
+                                <input type="radio" name="sentiment" value="negative">
+                                <i class="fas fa-arrow-down"></i> Most Negative
+                            </label>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="form-label"><strong>Display Mode:</strong></label>
+                        <div class="btn-group-toggle" data-toggle="buttons">
+                            <label class="btn btn-outline-success active" id="btn-top5">
+                                <input type="radio" name="mode" value="top5" checked>
+                                <i class="fas fa-star"></i> Top 5 Only
+                            </label>
+                            <label class="btn btn-outline-success" id="btn-all">
+                                <input type="radio" name="mode" value="all">
+                                <i class="fas fa-th"></i> All Stocks
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6 text-end">
+                    <button class="btn btn-success" id="btn-refresh">
+                        <i class="fas fa-sync-alt"></i> Refresh Data
+                    </button>
+                    <button class="btn btn-info" id="btn-download">
+                        <i class="fas fa-download"></i> Download CSV
+                    </button>
+                    <button class="btn btn-warning" id="btn-reset" title="Reset if generation is stuck">
+                        <i class="fas fa-redo"></i> Reset Status
+                    </button>
+                </div>
+            </div>
+            <div class="row mt-3">
+                <div class="col-12">
+                    <div class="alert alert-info" id="cache-info">
+                        <i class="fas fa-info-circle"></i> Data cached. Click "Refresh Data" to update.
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="treemap-container">
+            <div id="treemap-plot" class="loading">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-3">Loading sentiment data...</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Analytics Tab Content -->
+    <div class="tab-pane fade" id="analysis-content" role="tabpanel" aria-labelledby="analysis-tab">
+        <div class="sentiment-controls">
+            <h5><i class="fas fa-database"></i> ClickHouse Analytics Dashboard</h5>
+            <p class="text-muted">View advanced analytics powered by ClickHouse</p>
+            <div class="row mt-3">
+                <div class="col-md-3">
+                    <button class="btn btn-primary w-100" id="btn-top-gainers">
+                        <i class="fas fa-arrow-up"></i> Top Gainers
+                    </button>
+                </div>
+                <div class="col-md-3">
+                    <button class="btn btn-danger w-100" id="btn-top-losers">
+                        <i class="fas fa-arrow-down"></i> Top Losers
+                    </button>
+                </div>
+                <div class="col-md-3">
+                    <button class="btn btn-info w-100" id="btn-sector-analysis">
+                        <i class="fas fa-chart-pie"></i> Sector Analysis
+                    </button>
+                </div>
+                <div class="col-md-3">
+                    <button class="btn btn-warning w-100" id="btn-market-overview">
+                        <i class="fas fa-globe"></i> Market Overview
+                    </button>
+                </div>
+            </div>
+            <div class="row mt-2">
+                <div class="col-12">
+                    <label class="form-label"><strong>Days to analyze:</strong></label>
+                    <input type="number" id="analysis-days" class="form-control" value="7" min="1" max="90">
+                </div>
+            </div>
+        </div>
+        
+        <div id="analytics-container" class="mt-4">
+            <div class="alert alert-info">
+                <i class="fas fa-info-circle"></i> Click any button above to load analytics data from ClickHouse
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let currentSentimentType = 'positive';
+    let currentViewMode = 'top5';
+    let isLoading = false;
+
+    // Check data status
+    function checkStatus() {
+        return fetch('/api/status')
+            .then(response => response.json())
+            .then(data => {
+                return data;
+            });
+    }
+
+    // Load treemap visualization
+    function loadTreemap(sentimentType, viewMode, forceRefresh = false) {
+        if (isLoading) return;
+        
+        isLoading = true;
+        const plotDiv = document.getElementById('treemap-plot');
+        
+        // First check status
+        checkStatus().then(status => {
+            if (status.is_generating && !forceRefresh) {
+                const elapsed = status.generation_time || 0;
+                plotDiv.innerHTML = `
+                    <div class="text-center">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <p class="mt-3"><strong>Generating data...</strong></p>
+                        <p>This may take 10-30 minutes for the first time.</p>
+                        <p>Elapsed time: ${Math.floor(elapsed / 60)} minutes ${elapsed % 60} seconds</p>
+                        <p><small>Please wait or check back later.</small></p>
+                    </div>
+                `;
+                // Poll status every 10 seconds
+                const statusInterval = setInterval(() => {
+                    checkStatus().then(s => {
+                        if (!s.is_generating) {
+                            clearInterval(statusInterval);
+                            loadTreemap(sentimentType, viewMode, false);
+                        } else {
+                            const elapsed = s.generation_time || 0;
+                            plotDiv.querySelector('p:nth-of-type(3)').textContent = 
+                                `Elapsed time: ${Math.floor(elapsed / 60)} minutes ${elapsed % 60} seconds`;
+                        }
+                    });
+                }, 10000);
+                return;
+            }
+            
+            if (!status.has_data && !forceRefresh) {
+                plotDiv.innerHTML = `
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle"></i> No data available yet.
+                        <br><button class="btn btn-primary mt-2" id="btn-generate-now">
+                            Generate Data Now
+                        </button>
+                        <p class="mt-2"><small>Note: Data generation may take 10-30 minutes.</small></p>
+                    </div>
+                `;
+                // Add event listener to the button
+                setTimeout(() => {
+                    const genBtn = document.getElementById('btn-generate-now');
+                    if (genBtn) {
+                        genBtn.addEventListener('click', function() {
+                            document.getElementById('btn-refresh').click();
+                        });
+                    }
+                }, 100);
+                isLoading = false;
+                return;
+            }
+            
+            // Continue with normal loading (never use force_refresh in treemap endpoint)
+            plotDiv.innerHTML = '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div><p class="mt-3">Loading sentiment data...</p>';
+            
+            fetch(`/api/treemap?type=${sentimentType}&mode=${viewMode}`)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Check if data is being generated (202 status)
+                if (data.is_generating || data.error && data.error.includes('currently being generated')) {
+                    const elapsed = data.elapsed_time || 0;
+                    plotDiv.innerHTML = `
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status"></div>
+                            <p class="mt-3"><strong>Data is being generated...</strong></p>
+                            <p>This may take 10-30 minutes.</p>
+                            <p>Elapsed time: ${Math.floor(elapsed / 60)} minutes ${elapsed % 60} seconds</p>
+                            <p><small>Please wait or check back later.</small></p>
+                        </div>
+                    `;
+                    // Poll status
+                    const statusInterval = setInterval(() => {
+                        checkStatus().then(s => {
+                            if (!s.is_generating && s.has_data) {
+                                clearInterval(statusInterval);
+                                loadTreemap(sentimentType, viewMode, false);
+                            } else if (s.is_generating) {
+                                const elapsed = s.generation_time || 0;
+                                const elapsedP = plotDiv.querySelector('p:nth-of-type(3)');
+                                if (elapsedP) {
+                                    elapsedP.textContent = `Elapsed time: ${Math.floor(elapsed / 60)} minutes ${elapsed % 60} seconds`;
+                                }
+                            }
+                        });
+                    }, 10000);
+                    isLoading = false;
+                    return;
+                }
+                
+                if (data.error) {
+                    plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error: ${data.error}</div>`;
+                    isLoading = false;
+                    return;
+                }
+                
+                // Check if data structure is valid
+                if (!data.data || !data.layout) {
+                    console.error('Invalid data structure:', data);
+                    plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Invalid data format received. Please try refreshing the data.</div>`;
+                    isLoading = false;
+                    return;
+                }
+                
+                // Update cache info
+                if (forceRefresh) {
+                    document.getElementById('cache-info').innerHTML = 
+                        '<i class="fas fa-check-circle"></i> Data refreshed successfully!';
+                    setTimeout(() => {
+                        document.getElementById('cache-info').innerHTML = 
+                            '<i class="fas fa-info-circle"></i> Data cached. Click "Refresh Data" to update.';
+                    }, 3000);
+                }
+                
+                // Render plotly treemap
+                // Ensure proper configuration
+                const config = {
+                    responsive: true,
+                    displayModeBar: true,
+                    displaylogo: false,
+                    modeBarButtonsToRemove: ['pan2d', 'lasso2d']
+                };
+                
+                // Update layout for better display
+                if (data.layout) {
+                    data.layout.height = 600;
+                    data.layout.autosize = true;
+                    data.layout.margin = data.layout.margin || {};
+                    data.layout.margin.l = 10;
+                    data.layout.margin.r = 10;
+                    data.layout.margin.t = 50;
+                    data.layout.margin.b = 10;
+                }
+                
+                // Clear previous plot
+                plotDiv.innerHTML = '';
+                
+                try {
+                    Plotly.newPlot('treemap-plot', data.data, data.layout || {}, config).then(function() {
+                        // Ensure proper sizing after plot is rendered
+                        Plotly.Plots.resize('treemap-plot');
+                        isLoading = false;
+                    }).catch(function(err) {
+                        console.error('Plotly error:', err);
+                        plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error rendering chart: ${err.message}</div>`;
+                        isLoading = false;
+                    });
+                } catch (err) {
+                    console.error('Error creating plot:', err);
+                    plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error creating visualization: ${err.message}</div>`;
+                    isLoading = false;
+                }
+            })
+            .catch(error => {
+                console.error('Fetch error:', error);
+                plotDiv.innerHTML = `<div class="alert alert-danger">
+                    <i class="fas fa-exclamation-circle"></i> Error loading data: ${error.message}
+                    <br><small>Please check the browser console for more details or try refreshing the data.</small>
+                </div>`;
+                isLoading = false;
+            });
+        }).catch(err => {
+            console.error('Status check error:', err);
+            plotDiv.innerHTML = '<div class="spinner-border text-primary" role="status"></div><p class="mt-3">Loading sentiment data...</p>';
+            // Continue with normal fetch (never use force_refresh in treemap endpoint)
+            fetch(`/api/treemap?type=${sentimentType}&mode=${viewMode}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error: ${data.error}</div>`;
+                        isLoading = false;
+                        return;
+                    }
+                    
+                    // Check if data structure is valid
+                    if (!data.data || !data.layout) {
+                        console.error('Invalid data structure:', data);
+                        plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Invalid data format received. Please try refreshing the data.</div>`;
+                        isLoading = false;
+                        return;
+                    }
+                    
+                    // Render plotly treemap
+                    const config = {
+                        responsive: true,
+                        displayModeBar: true,
+                        displaylogo: false,
+                        modeBarButtonsToRemove: ['pan2d', 'lasso2d']
+                    };
+                    
+                    if (data.layout) {
+                        data.layout.height = 600;
+                        data.layout.autosize = true;
+                        data.layout.margin = data.layout.margin || {};
+                        data.layout.margin.l = 10;
+                        data.layout.margin.r = 10;
+                        data.layout.margin.t = 50;
+                        data.layout.margin.b = 10;
+                    }
+                    
+                    plotDiv.innerHTML = '';
+                    
+                    try {
+                        Plotly.newPlot('treemap-plot', data.data, data.layout || {}, config).then(function() {
+                            Plotly.Plots.resize('treemap-plot');
+                            isLoading = false;
+                        }).catch(function(err) {
+                            console.error('Plotly error:', err);
+                            plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error rendering chart: ${err.message}</div>`;
+                            isLoading = false;
+                        });
+                    } catch (err) {
+                        console.error('Error creating plot:', err);
+                        plotDiv.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error creating visualization: ${err.message}</div>`;
+                        isLoading = false;
+                    }
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                    plotDiv.innerHTML = `<div class="alert alert-danger">
+                        <i class="fas fa-exclamation-circle"></i> Error loading data: ${error.message}
+                    </div>`;
+                    isLoading = false;
+                });
+        });
+    }
+
+    // Event listeners for sentiment type
+    document.getElementById('btn-positive').addEventListener('click', function() {
+        currentSentimentType = 'positive';
+        document.getElementById('btn-positive').classList.add('active');
+        document.getElementById('btn-negative').classList.remove('active');
+        loadTreemap('positive', currentViewMode);
+    });
+
+    document.getElementById('btn-negative').addEventListener('click', function() {
+        currentSentimentType = 'negative';
+        document.getElementById('btn-negative').classList.add('active');
+        document.getElementById('btn-positive').classList.remove('active');
+        loadTreemap('negative', currentViewMode);
+    });
+
+    // Event listeners for view mode
+    document.getElementById('btn-top5').addEventListener('click', function() {
+        currentViewMode = 'top5';
+        document.getElementById('btn-top5').classList.add('active');
+        document.getElementById('btn-all').classList.remove('active');
+        loadTreemap(currentSentimentType, 'top5');
+    });
+
+    document.getElementById('btn-all').addEventListener('click', function() {
+        currentViewMode = 'all';
+        document.getElementById('btn-all').classList.add('active');
+        document.getElementById('btn-top5').classList.remove('active');
+        loadTreemap(currentSentimentType, 'all');
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', function() {
+        const btn = this;
+        const originalHTML = btn.innerHTML;
+        btn.disabled = true;
+        
+        // Check status first
+        checkStatus().then(status => {
+            if (status.is_generating) {
+                btn.innerHTML = '<i class="fas fa-info-circle"></i> Already Generating...';
+                alert('Data is already being generated. Please wait for it to complete.');
+                btn.innerHTML = originalHTML;
+                btn.disabled = false;
+                return;
+            }
+            
+            // Trigger refresh
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+            
+            fetch('/api/refresh-data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'started' || data.status === 'generating') {
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+                    document.getElementById('cache-info').innerHTML = 
+                        '<i class="fas fa-spinner fa-spin"></i> Data generation started. This may take 10-30 minutes.';
+                    
+                    // Start polling for status
+                    const statusInterval = setInterval(() => {
+                        checkStatus().then(s => {
+                            if (!s.is_generating && s.has_data) {
+                                clearInterval(statusInterval);
+                                btn.innerHTML = originalHTML;
+                                btn.disabled = false;
+                                document.getElementById('cache-info').innerHTML = 
+                                    '<i class="fas fa-check-circle"></i> Data generation completed!';
+                                // Reload the treemap
+                                loadTreemap(currentSentimentType, currentViewMode, false);
+                                setTimeout(() => {
+                                    document.getElementById('cache-info').innerHTML = 
+                                        '<i class="fas fa-info-circle"></i> Data cached. Click "Refresh Data" to update.';
+                                }, 5000);
+                            } else if (s.is_generating) {
+                                const elapsed = s.generation_time || 0;
+                                document.getElementById('cache-info').innerHTML = 
+                                    `<i class="fas fa-spinner fa-spin"></i> Generating data... (${Math.floor(elapsed / 60)}m ${elapsed % 60}s)`;
+                            }
+                        });
+                    }, 10000); // Check every 10 seconds
+                } else {
+                    alert('Error: ' + (data.error || data.message || 'Unknown error'));
+                    btn.innerHTML = originalHTML;
+                    btn.disabled = false;
+                }
+            })
+            .catch(error => {
+                console.error('Refresh error:', error);
+                alert('Error starting data generation: ' + error.message);
+                btn.innerHTML = originalHTML;
+                btn.disabled = false;
+            });
+        });
+    });
+
+    document.getElementById('btn-download').addEventListener('click', function() {
+        window.location.href = `/api/download-csv?type=${currentSentimentType}&mode=${currentViewMode}`;
+    });
+
+    document.getElementById('btn-reset').addEventListener('click', function() {
+        if (confirm('Are you sure you want to reset the generation status? This will stop any ongoing generation.')) {
+            fetch('/api/reset-status', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message || 'Status reset successfully');
+                // Reload the page to refresh status
+                location.reload();
+            })
+            .catch(error => {
+                alert('Error resetting status: ' + error.message);
+            });
+        }
+    });
+
+    // Add timeout to prevent infinite loading
+    function loadTreemapWithTimeout(sentimentType, viewMode, forceRefresh = false) {
+        const timeout = setTimeout(() => {
+            if (isLoading) {
+                isLoading = false;
+                const plotDiv = document.getElementById('treemap-plot');
+                plotDiv.innerHTML = `<div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle"></i> Request is taking too long. 
+                    This might be because data is being generated for the first time.
+                    <br><small>Please wait or try refreshing the data.</small>
+                </div>`;
+            }
+        }, 60000); // 60 second timeout
+        
+        loadTreemap(sentimentType, viewMode, forceRefresh).finally(() => {
+            clearTimeout(timeout);
+        });
+    }
+
+    // ===== ClickHouse Analytics Functions =====
+    
+    function displayAnalyticsTable(data, title) {
+        const container = document.getElementById('analytics-container');
+        
+        if (data.error) {
+            container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error: ${data.error}</div>`;
+            return;
+        }
+        
+        let html = `<h5>${title}</h5>`;
+        
+        // Build table from data
+        if (Array.isArray(data) && data.length > 0) {
+            html += '<div class="table-responsive"><table class="table table-striped table-hover">';
+            
+            // Get headers
+            const headers = Object.keys(data[0]);
+            html += '<thead class="table-dark"><tr>';
+            headers.forEach(header => {
+                html += `<th>${header}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+            
+            // Add rows
+            data.forEach(row => {
+                html += '<tr>';
+                headers.forEach(header => {
+                    let value = row[header];
+                    // Format numbers
+                    if (typeof value === 'number') {
+                        value = value.toFixed(3);
+                    }
+                    html += `<td>${value}</td>`;
+                });
+                html += '</tr>';
+            });
+            
+            html += '</tbody></table></div>';
+        } else {
+            html += '<div class="alert alert-info">No data available</div>';
+        }
+        
+        container.innerHTML = html;
+    }
+    
+    function loadAnalyticsData(endpoint, title) {
+        const container = document.getElementById('analytics-container');
+        const days = document.getElementById('analysis-days').value;
+        
+        container.innerHTML = '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div><p class="mt-3">Loading analytics data...</p>';
+        
+        fetch(`${endpoint}?days=${days}`)
+            .then(response => response.json())
+            .then(data => {
+                displayAnalyticsTable(data, title);
+            })
+            .catch(error => {
+                container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error loading data: ${error.message}</div>`;
+            });
+    }
+    
+    // Event listeners for analytics buttons
+    document.getElementById('btn-top-gainers').addEventListener('click', function() {
+        loadAnalyticsData('/api/analytics/top-gainers', 'Top Gainers (Highest Sentiment)');
+    });
+    
+    document.getElementById('btn-top-losers').addEventListener('click', function() {
+        loadAnalyticsData('/api/analytics/top-losers', 'Top Losers (Lowest Sentiment)');
+    });
+    
+    document.getElementById('btn-sector-analysis').addEventListener('click', function() {
+        const container = document.getElementById('analytics-container');
+        const days = document.getElementById('analysis-days').value;
+        
+        container.innerHTML = '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div><p class="mt-3">Loading sector analysis...</p>';
+        
+        fetch(`/api/analytics/sector-analysis?days=${days}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                let html = '<h5>Sector Analysis</h5>';
+                if (data.sectors && Array.isArray(data.sectors) && data.sectors.length > 0) {
+                    html += '<div class="row">';
+                    data.sectors.forEach(sector => {
+                        const bgcolor = sector.avg_sentiment > 0 ? 'bg-success' : 'bg-danger';
+                        html += `
+                            <div class="col-md-6 mb-3">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h5 class="card-title">${sector.sector}</h5>
+                                        <p class="card-text">
+                                            <strong>Avg Sentiment:</strong> <span class="badge ${bgcolor}">${sector.avg_sentiment.toFixed(3)}</span><br>
+                                            <strong>Tickers:</strong> ${sector.ticker_count}<br>
+                                            <strong>Max:</strong> ${sector.max_sentiment.toFixed(3)}<br>
+                                            <strong>Min:</strong> ${sector.min_sentiment.toFixed(3)}<br>
+                                            <strong>Volatility:</strong> ${sector.volatility.toFixed(3)}<br>
+                                            <strong>News Count:</strong> ${sector.total_news}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                } else {
+                    html += '<div class="alert alert-info">No sector data available</div>';
+                }
+                container.innerHTML = html;
+            })
+            .catch(error => {
+                container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error: ${error.message}</div>`;
+            });
+    });
+    
+    document.getElementById('btn-market-overview').addEventListener('click', function() {
+        const container = document.getElementById('analytics-container');
+        const days = document.getElementById('analysis-days').value;
+        
+        container.innerHTML = '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div><p class="mt-3">Loading market overview...</p>';
+        
+        fetch(`/api/analytics/market-overview?days=${days}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                let html = '<h5>Market Overview</h5>';
+                if (data.market_overview && data.market_overview.sectors && data.market_overview.sectors.length > 0) {
+                    html += '<div class="table-responsive"><table class="table table-striped table-hover">';
+                    html += '<thead class="table-dark"><tr><th>Date</th><th>Sector</th><th>Avg Sentiment</th><th>Ticker Count</th><th>News Count</th></tr></thead><tbody>';
+                    
+                    data.market_overview.sectors.forEach(row => {
+                        const bgcolor = row.avg_sentiment > 0 ? 'table-success' : 'table-danger';
+                        html += `<tr class="${bgcolor}">
+                            <td>${row.date}</td>
+                            <td>${row.sector}</td>
+                            <td>${row.avg_sentiment.toFixed(3)}</td>
+                            <td>${row.ticker_count}</td>
+                            <td>${row.total_news}</td>
+                        </tr>`;
+                    });
+                    
+                    html += '</tbody></table></div>';
+                } else {
+                    html += '<div class="alert alert-info">No market data available</div>';
+                }
+                container.innerHTML = html;
+            })
+            .catch(error => {
+                container.innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-circle"></i> Error: ${error.message}</div>`;
+            });
+    });
+
+    // Initial load
+    loadTreemap('positive', 'top5');
+</script>
+{% endblock %}
+

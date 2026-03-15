@@ -1,0 +1,87 @@
+finviz.py 是 专门负责去 Finviz 抓新闻表格 的爬虫模块，它要做的事情是：
+给它一堆股票代码 ["AAPL", "MSFT", ...]
+并发访问 https://finviz.com/quote.ashx?t=XXX
+在每个页面里找到 id="news-table" 的 <table>
+把每只股票对应的 <table> 返回给后续的解析器（parser.py）去提取标题和时间
+因为 股票有 500+ 支，而且 Finviz 有限流，所以这里设计了一个比较高级的爬虫策略：快车道 + 慢车道 + 重试 + 退避 + robots.txt 合规。
+1. 顶部注释：双车道设计概念
+文件开头有一大段说明（中文写得挺清楚的）：
+快车道（Fast Lane）：
+多线程（MAX_WORKERS，默认 3）
+每个请求前随机延迟 1~3 秒
+失败（比如 429、网络错误）时，用较短的退避时间（0.1s, 0.2s, 0.4s, 0.8s 之类）
+目标：快速处理掉 95% 正常的 ticker
+慢车道（Slow Lane）：
+只处理“快车道失败”的那一小部分 ticker
+并发线程数最多 3，更保守
+每个请求前延迟 3~6 秒
+失败时用更长的退避：2s/4s/8s/16s
+可以选用 Redis 队列做分布式重试（高配玩法）
+robots.txt 合规：
+抓之前会先请求 https://finviz.com/robots.txt，看允许不允许访问股票页面。
+2. 主要对外函数：get_news_table(tickers)
+def get_news_table(tickers: list[str]) -> dict[str, object]:    """    为指定 ticker 列表批量抓取 Finviz 新闻表格。    返回: 字典 {ticker: BeautifulSoup <table> 或 None}    """
+核心步骤（你可以记成 3 步）：
+快车道线程池并发抓取
+收集失败的 ticker
+把失败的交给慢车道再试一轮
+具体看代码：
+news_tables: dict[str, object] = {}fast_failures: list[str] = []# ---- 快车道：线程池并发抓取 ----with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:    futures = {        pool.submit(_process_ticker, idx, ticker, fast=True): ticker        for idx, ticker in enumerate(tickers)    }    for future in as_completed(futures):        ticker, table = future.result()        if table is None:            fast_failures.append(ticker)        else:            news_tables[ticker] = table
+用 ThreadPoolExecutor 创建一个线程池（比如 3 个 worker）。
+对每个 ticker 提交一个任务 _process_ticker，参数 fast=True 表示走快车道。
+as_completed(futures) 表示谁先完成先处理谁。
+如果返回的 table 是 None，说明抓失败了（比如 429、超时、robots 限制），记录到 fast_failures。
+成功的就放进 news_tables[ticker] = table。
+# ---- 如果有失败的 ticker，交给慢车道重试 ----if fast_failures:    _slow_lane(fast_failures, news_tables)
+要点：get_news_table 最终返回的是一个 字典：
+key: 原始 ticker（比如 "AAPL"）
+value: 对应的 BeautifulSoup <table id="news-table"> 对象，或者 None（如果两轮都失败）
+后面 parser.py 的 parse_news_table 会遍历这些 <table>，提取出真正的新闻标题和时间。
+3. 慢车道调度：_slow_lane 和 _slow_lane_threads
+def _slow_lane(failed: list[str], results: dict) -> None:    """    慢车道调度器：根据环境变量决定使用 Redis 队列还是线程池。    """    if QUEUE_BACKEND == "redis":        try:            _slow_lane_redis(failed, results)            return        except Exception:            降级为线程池    _slow_lane_threads(failed, results)
+逻辑：
+如果配置成用 Redis，就把失败的 ticker 推到 Redis 队列里，用 worker 消费。
+如果 Redis 不可用或者没配置，就用本地线程池 _slow_lane_threads。
+def _slow_lane_threads(failed: list[str], results: dict) -> None:    slow_workers = min(3, len(failed))    with ThreadPoolExecutor(max_workers=slow_workers) as pool:        futures = {            pool.submit(_process_ticker, idx, ticker, fast=False): ticker            for idx, ticker in enumerate(failed)        }        for future in as_completed(futures):            ticker, table = future.result()            if table is None:                logger.warning("慢车道仍然失败，跳过")            else:                results[ticker] = table
+这里的 fast=False 表示：
+使用 慢车道的延迟和退避策略（3~6 秒延迟，2/4/8/16s 退避）
+4. _process_ticker：一个 ticker 的抓取流程
+def _process_ticker(index: int, ticker: str, *, fast: bool) -> tuple[str, object]:    """    处理单个 ticker：先按批次执行批量暂停，再抓取新闻。    每处理 BATCH_SIZE 个 ticker 后随机暂停 8~12 秒，    模拟真实用户浏览行为，避免被服务器识别为机器人并封禁 IP。    """    if index % BATCH_SIZE == 0 and index > 0:        sleep_time = np.random.uniform(BATCH_SLEEP_MIN, BATCH_SLEEP_MAX)        time.sleep(sleep_time)    return _fetch_news_table(ticker, fast=fast)
+功能：
+按批次加大暂停时间（比如每处理 30 个 ticker，就休息 8~12 秒）。
+然后调用 _fetch_news_table 真正去请求 Finviz。
+5. _fetch_news_table：真正访问 Finviz 的函数
+这是最重要的部分，帮你详细拆一下：
+def _fetch_news_table(ticker: str, *, fast: bool) -> tuple[str, object]:    """    抓取单个 ticker 在 Finviz 页面上的新闻表格。    返回: (原始 ticker, BeautifulSoup 表格标签 或 None)    """
+5.1 预处理 ticker & 构造路径
+original = tickernorm = ticker.replace(".", "-").upper()path = f"/quote.ashx?t={norm}"
+Finviz 不接受 BRK.B 这种带点的格式，需要转成 BRK-B。
+path 是要访问的路径，用于 robots 检查。
+5.2 robots.txt 检查
+if not can_fetch(_ROBOTS_URL, DEFAULT_USER_AGENT, path):    logger.warning("robots.txt 禁止访问 %s，跳过", path)    return original, None
+先看 https://finviz.com/robots.txt 是否允许访问 /quote.ashx?t=XXX。
+如果不允许，直接返回 (ticker, None)，不再重试。
+5.3 根据快/慢车道选择参数
+delay_min = DELAY_FAST_MIN if fast else DELAY_SLOW_MINdelay_max = DELAY_FAST_MAX if fast else DELAY_SLOW_MAXbackoffs = BACKOFFS_FAST if fast else BACKOFFS_SLOW
+fast=True：
+延迟短（比如 1~3 秒）
+退避时间短（0.1, 0.2, 0.4, 0.8 …）
+fast=False（慢车道）：
+延迟长（3~6 秒）
+退避时间长（2, 4, 8, 16 …）
+5.4 请求前随机延迟
+time.sleep(np.random.uniform(delay_min, delay_max))
+每个请求前随机等一下，避免瞬间打爆 Finviz。
+5.5 循环重试 + 指数退避
+url = _FINVIZ_BASE + normfor attempt, backoff in enumerate(backoffs, start=1):    try:        req = Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})        with urlopen(req, timeout=15) as resp:            html = BeautifulSoup(resp, "html.parser")        table = html.find(id="news-table")        if table is None:            logger.debug("%s 页面中未找到 news-table 元素", norm)        return original, table  # 不管 table 是不是 None，都返回（上层会判断）
+如果成功拿到页面，就用 BeautifulSoup 解析 HTML，然后 find(id="news-table")。
+找不到 news-table 也会返回 (ticker, None)，上层逻辑会把这个 ticker 当成失败。
+错误处理部分：
+    except HTTPError as exc:        if exc.code == 429:            # Too Many Requests → 打印警告，等待 backoff 秒，然后重试        else:            # 其它 HTTP 错误：也等待 backoff 再重试    except (IncompleteRead, URLError, TimeoutError, OSError) as exc:        # 网络错误：同样按 backoff 等待再重试
+每次失败都会等 backoff 秒，然后再试下一轮。
+尝试次数等于 len(backoffs)，比如 4 次。
+5.6 重试全部失败后放弃
+logger.error(    "ticker %s 在 %d 次重试后仍然失败（fast=%s），跳过",    norm, len(backoffs), fast,)return original, None
+完全失败就返回 (ticker, None)，上层的 get_news_table 会：
+在快车道里把它放进 fast_failures
+在慢车道里打印 warning 并最终跳过

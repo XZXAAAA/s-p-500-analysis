@@ -1,0 +1,153 @@
+# MySQL Cluster Learning Environment
+# Ports: 3308, 3309, 1186 (不与主项目 3307 冲突)
+
+services:
+  # Management Node
+  ndb_mgmd:
+    image: mysql/mysql-cluster:8.0
+    container_name: mysql_cluster_mgmd
+    command: >
+      sh -c "
+        echo '[NDBD DEFAULT]' > /etc/mysql-cluster.cnf &&
+        echo 'NoOfReplicas=2' >> /etc/mysql-cluster.cnf &&
+        echo 'DataMemory=80M' >> /etc/mysql-cluster.cnf &&
+        echo '' >> /etc/mysql-cluster.cnf &&
+        echo '[NDB_MGMD]' >> /etc/mysql-cluster.cnf &&
+        echo 'HostName=ndb_mgmd' >> /etc/mysql-cluster.cnf &&
+        echo 'DataDir=/var/lib/mysql-cluster' >> /etc/mysql-cluster.cnf &&
+        echo '' >> /etc/mysql-cluster.cnf &&
+        echo '[NDBD]' >> /etc/mysql-cluster.cnf &&
+        echo 'NodeId=2' >> /etc/mysql-cluster.cnf &&
+        echo 'HostName=ndbd1' >> /etc/mysql-cluster.cnf &&
+        echo 'DataDir=/usr/mysql-cluster' >> /etc/mysql-cluster.cnf &&
+        echo '' >> /etc/mysql-cluster.cnf &&
+        echo '[NDBD]' >> /etc/mysql-cluster.cnf &&
+        echo 'NodeId=3' >> /etc/mysql-cluster.cnf &&
+        echo 'HostName=ndbd2' >> /etc/mysql-cluster.cnf &&
+        echo 'DataDir=/usr/mysql-cluster' >> /etc/mysql-cluster.cnf &&
+        echo '' >> /etc/mysql-cluster.cnf &&
+        echo '[MYSQLD]' >> /etc/mysql-cluster.cnf &&
+        echo 'NodeId=4' >> /etc/mysql-cluster.cnf &&
+        echo 'HostName=mysqld1' >> /etc/mysql-cluster.cnf &&
+        echo '' >> /etc/mysql-cluster.cnf &&
+        echo '[MYSQLD]' >> /etc/mysql-cluster.cnf &&
+        echo 'NodeId=5' >> /etc/mysql-cluster.cnf &&
+        echo 'HostName=mysqld2' >> /etc/mysql-cluster.cnf &&
+        cat /etc/mysql-cluster.cnf &&
+        ndb_mgmd --config-file=/etc/mysql-cluster.cnf --ndb-nodeid=1 --nodaemon
+      "
+    volumes:
+      - mgmd_data:/var/lib/mysql-cluster
+    networks:
+      - mysql_cluster_network
+    ports:
+      - "1186:1186"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+    healthcheck:
+      test: ["CMD-SHELL", "ndb_mgm -e 'SHOW' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # Data Node 1
+  ndbd1:
+    image: mysql/mysql-cluster:8.0
+    container_name: mysql_cluster_ndbd1
+    command: ndbd --connect-string=ndb_mgmd:1186 --nodaemon
+    volumes:
+      - ndbd1_data:/usr/mysql-cluster
+    networks:
+      - mysql_cluster_network
+    depends_on:
+      ndb_mgmd:
+        condition: service_started
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+    restart: on-failure
+
+  # Data Node 2
+  ndbd2:
+    image: mysql/mysql-cluster:8.0
+    container_name: mysql_cluster_ndbd2
+    command: ndbd --connect-string=ndb_mgmd:1186 --nodaemon
+    volumes:
+      - ndbd2_data:/usr/mysql-cluster
+    networks:
+      - mysql_cluster_network
+    depends_on:
+      ndb_mgmd:
+        condition: service_started
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+    restart: on-failure
+
+  # SQL Node 1 (Port 3308)
+  mysqld1:
+    image: mysql/mysql-cluster:8.0
+    container_name: mysql_cluster_sql1
+    command: mysqld --ndbcluster --ndb-connectstring=ndb_mgmd:1186
+    volumes:
+      - mysqld1_data:/var/lib/mysql
+    networks:
+      - mysql_cluster_network
+    ports:
+      - "3308:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+      - MYSQL_DATABASE=cluster_test
+    depends_on:
+      ndb_mgmd:
+        condition: service_started
+      ndbd1:
+        condition: service_started
+      ndbd2:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: on-failure
+
+  # SQL Node 2 (Port 3309 - 避免与主项目 3307 冲突)
+  mysqld2:
+    image: mysql/mysql-cluster:8.0
+    container_name: mysql_cluster_sql2
+    command: mysqld --ndbcluster --ndb-connectstring=ndb_mgmd:1186
+    volumes:
+      - mysqld2_data:/var/lib/mysql
+    networks:
+      - mysql_cluster_network
+    ports:
+      - "3309:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+      - MYSQL_DATABASE=cluster_test
+    depends_on:
+      ndb_mgmd:
+        condition: service_started
+      ndbd1:
+        condition: service_started
+      ndbd2:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: on-failure
+
+volumes:
+  mgmd_data:
+  ndbd1_data:
+  ndbd2_data:
+  mysqld1_data:
+  mysqld2_data:
+
+networks:
+  mysql_cluster_network:
+    driver: bridge

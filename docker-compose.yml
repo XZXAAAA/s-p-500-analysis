@@ -1,0 +1,184 @@
+# Removed version (obsolete in newer docker-compose)
+
+services:
+  # Database Services
+  mysql:
+    image: mysql:8.0
+    container_name: sentiment_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-root}
+      MYSQL_DATABASE: sentiment_db
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/database/mysql_schema.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - sentiment_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    container_name: sentiment_dynamodb
+    ports:
+      - "8000:8000"
+    networks:
+      - sentiment_network
+    healthcheck:
+      test: ["CMD-SHELL", "printf '' >/dev/tcp/localhost/8000"]
+      timeout: 10s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: sentiment_clickhouse
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-sentiment_db}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-sentiment_user}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-Sentiment!234}
+    networks:
+      - sentiment_network
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "clickhouse-client --host localhost --port 9000 --user ${CLICKHOUSE_USER:-sentiment_user} --password ${CLICKHOUSE_PASSWORD:-Sentiment!234} --query 'SELECT 1' >/dev/null"
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # Backend Microservices
+  auth-service:
+    build:
+      context: .
+      dockerfile: backend/services/auth-service/Dockerfile
+    container_name: sentiment_auth_service
+    ports:
+      - "5001:5001"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-root}
+      MYSQL_DATABASE: sentiment_db
+      DATABASE_URL: mysql://root:${MYSQL_PASSWORD:-root}@mysql:3306/sentiment_db
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - sentiment_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      timeout: 10s
+      retries: 5
+
+  data-service:
+    build:
+      context: .
+      dockerfile: backend/services/data-service/Dockerfile
+    container_name: sentiment_data_service
+    ports:
+      - "5002:5002"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-root}
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-local}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-local}
+      AWS_DEFAULT_REGION: us-east-1
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-sentiment_user}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-Sentiment!234}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-sentiment_db}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      dynamodb:
+        condition: service_started
+    networks:
+      - sentiment_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      timeout: 10s
+      retries: 5
+
+  viz-service:
+    build:
+      context: .
+      dockerfile: backend/services/viz-service/Dockerfile
+    container_name: sentiment_viz_service
+    ports:
+      - "5003:5003"
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-sentiment_user}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-Sentiment!234}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-sentiment_db}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - sentiment_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      timeout: 10s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: backend/services/api-gateway/Dockerfile
+    container_name: sentiment_api_gateway
+    ports:
+      - "5000:5000"
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:5001
+      DATA_SERVICE_URL: http://data-service:5002
+      VIZ_SERVICE_URL: http://viz-service:5003
+    depends_on:
+      - auth-service
+      - data-service
+      - viz-service
+    networks:
+      - sentiment_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      timeout: 10s
+      retries: 5
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sentiment_frontend
+    ports:
+      - "3000:80"
+    environment:
+      REACT_APP_API_BASE_URL: http://localhost:5000/api
+    depends_on:
+      - api-gateway
+    networks:
+      - sentiment_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      timeout: 10s
+      retries: 5
+
+volumes:
+  mysql_data:
+
+networks:
+  sentiment_network:
+    driver: bridge
+

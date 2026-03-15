@@ -1,0 +1,8 @@
+# MySQL Cluster 数据文件
+*.log
+*.pid
+*.sock
+
+# Docker volumes 数据（如果需要）
+# volumes/
+
